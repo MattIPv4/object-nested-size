@@ -1,6 +1,6 @@
 {
   "name": "object-nested-size",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Get the size of an object and all its nested properties",
   "main": "index.js",
   "scripts": {
