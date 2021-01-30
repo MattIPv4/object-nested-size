@@ -1,60 +1,53 @@
-// Thanks to https://github.com/miktam/sizeof for the basis of a lot of this
+const v8 = require('v8');
 
-const ECMA_BYTE_SIZES = {
-    STRING: 2,
-    BOOLEAN: 4,
-    NUMBER: 8
-};
+// Thanks to https://github.com/miktam/sizeof for the basis of this
 
-const getSize = (object, seen = new WeakSet()) => {
-    // Buffer
-    if (Buffer.isBuffer(object)) {
-        return {
-            type: 'buffer',
-            size: object.length,
-        };
-    }
-
+const getSize = (object, seen, id) => {
     const objectType = typeof object;
 
-    // String
-    if (objectType === 'string') {
+    // Primitives
+    if (['undefined', 'string', 'boolean', 'number', 'bigint'].includes(objectType)) {
         return {
-            type: 'string',
-            size: object.length * ECMA_BYTE_SIZES.STRING,
+            id,
+            type: objectType,
+            size: v8.serialize(object).byteLength,
         };
     }
 
-    // Boolean
-    if (objectType === 'boolean') {
+    // Null
+    if (object === null) {
         return {
-            type: 'boolean',
-            size: ECMA_BYTE_SIZES.BOOLEAN,
-        };
-    }
-
-    // Number
-    if (objectType === 'number') {
-        return {
-            type: 'number',
-            size: ECMA_BYTE_SIZES.NUMBER,
+            id,
+            type: 'null',
+            size: 0,
         };
     }
 
     // Symbol
     if (objectType === 'symbol') {
         return {
+            id,
             type: 'symbol',
             size: Symbol.keyFor && Symbol.keyFor(object)
-                ? Symbol.keyFor(object).length * ECMA_BYTE_SIZES.STRING
-                : (object.toString().length - 8) * ECMA_BYTE_SIZES.STRING,
+                ? v8.serialize(Symbol.keyFor(object)).byteLength
+                : v8.serialize(object.toString()).byteLength,
+        };
+    }
+
+    // Buffer
+    if (Buffer.isBuffer(object)) {
+        return {
+            id,
+            type: 'buffer',
+            size: object.byteLength,
         };
     }
 
     // Array
-    if (objectType === 'object' && Array.isArray(object)) {
-        const res = object.map(innerObject => getSize(innerObject, seen));
+    if (Array.isArray(object)) {
+        const res = object.map((innerObject, i) => getSize(innerObject, seen, `${id}[${i}]`));
         return {
+            id,
             type: 'array',
             size: res.reduce((acc, item) => acc + item.size, 0),
             values: res,
@@ -63,6 +56,18 @@ const getSize = (object, seen = new WeakSet()) => {
 
     // Object
     if (objectType === 'object') {
+        // Handle circular objects
+        const circularId = seen.get(object);
+        if (circularId !== undefined) {
+            return {
+                id,
+                circularId,
+                type: 'circular',
+                size: 0,
+            };
+        }
+        seen.set(object, id);
+
         // Get props
         const props = [];
         for (const prop in object) props.push(prop);
@@ -70,27 +75,9 @@ const getSize = (object, seen = new WeakSet()) => {
 
         // Get the sizes
         const res = props.reduce((all, prop) => {
-            // Get the key size
-            const keySize = getSize(prop, seen);
-
-            // Handle circular objects
-            if (typeof object[prop] === 'object' && object[prop] !== null) {
-                if (seen.has(object[prop])) {
-                    all[prop] = {
-                        key: keySize,
-                        value: {
-                            type: 'circular',
-                            size: 0,
-                        },
-                        size: keySize.size,
-                    };
-                    return all;
-                }
-                seen.add(object[prop]);
-            }
-
-            // Not circular
-            const valueSize = getSize(object[prop], seen);
+            const propId = `${id}.${prop.toString()}`;
+            const keySize = getSize(prop, seen, `${propId}\{key\}`);
+            const valueSize = getSize(object[prop], seen, propId);
             all[prop] = {
                 key: keySize,
                 value: valueSize,
@@ -101,17 +88,20 @@ const getSize = (object, seen = new WeakSet()) => {
 
         // Wrap
         return {
+            id,
             type: 'object',
             size: Object.values(res).reduce((acc, item) => acc + item.size, 0),
             values: res,
         };
     }
 
-    // Unknown
+    // Unknown (functions)
     return {
+        id,
         type: 'unknown',
+        typeof: objectType,
         size: 0,
     };
 };
 
-module.exports = getSize;
+module.exports = object => getSize(object, new WeakMap(), '{root}');
